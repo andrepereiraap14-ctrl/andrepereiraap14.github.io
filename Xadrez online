@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Xadrez Online - Multiplayer</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #f0f0f0;
+      padding: 20px;
+    }
+    #controls {
+      margin: 10px 0;
+    }
+    button {
+      margin: 0 5px;
+      padding: 8px 12px;
+      font-size: 1em;
+    }
+    #status {
+      margin: 10px 0;
+      font-size: 1.2em;
+      font-weight: bold;
+      min-height: 1.5em;
+    }
+    #board {
+      display: grid;
+      grid-template-columns: repeat(8, 60px);
+      grid-template-rows: repeat(8, 60px);
+      border: 2px solid #333;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+    .square {
+      width: 60px;
+      height: 60px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 40px;
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+      transition: transform 0.2s, background 0.2s;
+    }
+    .light { background: #f0d9b5; }
+    .dark  { background: #b58863; }
+    .selected { background: #aec6cf !important; }
+    .valid-move::after {
+      content: "";
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      background: rgba(0, 128, 0, 0.5);
+      border-radius: 50%;
+    }
+    .in-check {
+      box-shadow: inset 0 0 10px 3px red;
+    }
+    .captured {
+      animation: captureEffect 0.6s ease-out;
+    }
+    @keyframes captureEffect {
+      0% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.2); opacity: 0.7; }
+      100% { transform: scale(0); opacity: 0; }
+    }
+    #global-ranking {
+      margin-top: 20px;
+      width: 300px;
+      background: white;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+    #global-ranking h3 {
+      text-align: center;
+      margin-top: 0;
+      color: #333;
+    }
+    .rank-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid #eee;
+      font-size: 1em;
+    }
+    .rank-item strong {
+      color: #2c3e50;
+    }
+    .rank-item span {
+      color: #e74c3c;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>♟️ Xadrez Online - Multiplayer ♟️</h1>
+  <div id="status">Conectando...</div>
+  <div id="controls">
+    <button id="btn-nova-partida">Nova Partida</button>
+  </div>
+  <div id="board"></div>
+  <div id="global-ranking">
+    <h3>🏆 Ranking Global</h3>
+    <div id="ranking-list">Carregando...</div>
+  </div>
+
+  <script type="module">
+    // =============== 🔥 IMPORTAÇÕES DO FIREBASE ===============
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-app.js";
+    import {
+      getDatabase,
+      ref,
+      set,
+      onValue,
+      push,
+      orderByChild,
+      limitToLast,
+      query,
+      get,
+      serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-database.js";
+
+    // =============== 🔑 CONFIGURAÇÃO DO SEU PROJETO ===============
+    const firebaseConfig = {
+      apiKey: "AIzaSyC8ht98t7BcNQcmWVT_HgK5DGqy-9Y5DCA",
+      authDomain: "xadrez-online-eb29c.firebaseapp.com",
+      projectId: "xadrez-online-eb29c",
+      storageBucket: "xadrez-online-eb29c.firebasestorage.app",
+      messagingSenderId: "879058807874",
+      appId: "1:879058807874:web:258be38718793214a751db"
+    };
+
+    // =============== INICIALIZAÇÃO ===============
+    const app = initializeApp(firebaseConfig);
+    const database = getDatabase(app);
+    const ROOM_ID = "xadrez-sala-publica";
+    const salaRef = ref(database, 'jogos/' + ROOM_ID);
+    const rankingRef = ref(database, 'ranking');
+
+    // =============== VARIÁVEIS DO JOGO ===============
+    const PIECES = {
+      'K': '♔', 'Q': '♕', 'R': '♖', 'B': '♗', 'N': '♘', 'P': '♙',
+      'k': '♚', 'q': '♛', 'r': '♜', 'b': '♝', 'n': '♞', 'p': '♟'
+    };
+
+    let board = [];
+    let turno = 'w';
+    let selecionada = null;
+    let reiEmXeque = false;
+    let gameOver = false;
+    let meuTurno = true;
+
+    let roque = {
+      w: { short: true, long: true },
+      b: { short: true, long: true }
+    };
+
+    const statusEl = document.getElementById('status');
+    const boardEl = document.getElementById('board');
+    const rankingListEl = document.getElementById('ranking-list');
+    const btnNovaPartida = document.getElementById('btn-nova-partida');
+
+    // =============== FUNÇÕES AUXILIARES ===============
+    function resetarTabuleiro() {
+      return [
+        ['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'],
+        ['p', 'p', 'p', 'p', 'p', 'p', 'p', 'p'],
+        [null, null, null, null, null, null, null, null],
+        [null, null, null, null, null, null, null, null],
+        [null, null, null, null, null, null, null, null],
+        [null, null, null, null, null, null, null, null],
+        ['P', 'P', 'P', 'P', 'P', 'P', 'P', 'P'],
+        ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R']
+      ];
+    }
+
+    function isWhite(piece) { return piece && piece === piece.toUpperCase(); }
+    function getReiPos(cor) {
+      const white = cor === 'w';
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+        const p = board[r][c];
+        if (p && ((white && p === 'K') || (!white && p === 'k'))) return { row: r, col: c };
+      }
+      return null;
+    }
+    function emXeque(cor) {
+      const rei = getReiPos(cor);
+      if (!rei) return false;
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+        const p = board[r][c];
+        if (p && isWhite(p) !== (cor === 'w')) {
+          const moves = getValidMovesRaw(r, c, true);
+          if (moves.some(m => m.row === rei.row && m.col === rei.col)) return true;
+        }
+      }
+      return false;
+    }
+    function getValidMovesRaw(row, col, ignoreCheck = false) {
+      const piece = board[row][col];
+      if (!piece) return [];
+      const white = isWhite(piece);
+      const type = white ? piece.toLowerCase() : piece;
+      const moves = [];
+      const addMove = (r, c) => {
+        if (r < 0 || r > 7 || c < 0 || c > 7) return false;
+        const target = board[r][c];
+        if (target === null || isWhite(target) !== white) {
+          moves.push({ row: r, col: c });
+          return target === null;
+        }
+        return false;
+      };
+      switch (type) {
+        case 'p':
+          const dir = white ? -1 : 1;
+          if (board[row + dir]?.[col] === null) {
+            addMove(row + dir, col);
+            if ((white && row === 6) || (!white && row === 1)) {
+              if (board[row + 2 * dir]?.[col] === null) addMove(row + 2 * dir, col);
+            }
+          }
+          if (col > 0 && board[row + dir]?.[col - 1] !== null && isWhite(board[row + dir][col - 1]) !== white)
+            moves.push({ row: row + dir, col: col - 1 });
+          if (col < 7 && board[row + dir]?.[col + 1] !== null && isWhite(board[row + dir][col + 1]) !== white)
+            moves.push({ row: row + dir, col: col + 1 });
+          break;
+        case 'r':
+          for (let d of [[0,1],[0,-1],[1,0],[-1,0]]) for (let i = 1; i <= 7; i++) if (!addMove(row + d[0]*i, col + d[1]*i)) break;
+          break;
+        case 'b':
+          for (let d of [[1,1],[1,-1],[-1,1],[-1,-1]]) for (let i = 1; i <= 7; i++) if (!addMove(row + d[0]*i, col + d[1]*i)) break;
+          break;
+        case 'q':
+          for (let d of [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]) for (let i = 1; i <= 7; i++) if (!addMove(row + d[0]*i, col + d[1]*i)) break;
+          break;
+        case 'k':
+          for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+            if (dr === 0 && dc === 0) continue;
+            addMove(row + dr, col + dc);
+          }
+          if (!ignoreCheck && !emXeque(turno)) {
+            if (white && roque.w.short && board[7][5] === null && board[7][6] === null)
+              moves.push({ row: 7, col: 6, special: 'roque-short' });
+            if (white && roque.w.long && board[7][1] === null && board[7][2] === null && board[7][3] === null)
+              moves.push({ row: 7, col: 2, special: 'roque-long' });
+            if (!white && roque.b.short && board[0][5] === null && board[0][6] === null)
+              moves.push({ row: 0, col: 6, special: 'roque-short' });
+            if (!white && roque.b.long && board[0][1] === null && board[0][2] === null && board[0][3] === null)
+              moves.push({ row: 0, col: 2, special: 'roque-long' });
+          }
+          break;
+        case 'n':
+          const offsets = [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]];
+          offsets.forEach(([dr,dc]) => addMove(row+dr, col+dc));
+          break;
+      }
+      return moves;
+    }
+    function emXequeSimulado(fromRow, fromCol, toRow, toCol) {
+      const temp = board[toRow][toCol];
+      board[toRow][toCol] = board[fromRow][fromCol];
+      board[fromRow][fromCol] = null;
+      const emXequeAgora = emXeque(turno);
+      board[fromRow][fromCol] = board[toRow][toCol];
+      board[toRow][toCol] = temp;
+      return emXequeAgora;
+    }
+    function getValidMoves(row, col) {
+      const raw = getValidMovesRaw(row, col);
+      return raw.filter(move => !emXequeSimulado(row, col, move.row, move.col));
+    }
+    function temMovimentosValidos(cor) {
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+        const p = board[r][c];
+        if (p && isWhite(p) === (cor === 'w')) {
+          if (getValidMoves(r, c).length > 0) return true;
+        }
+      }
+      return false;
+    }
+
+    // =============== EFEITO DE CAPTURA ===============
+    function aplicarEfeitoCaptura(row, col) {
+      const square = document.querySelector(`.square[data-row="${row}"][data-col="${col}"]`);
+      if (square) {
+        square.classList.add('captured');
+        setTimeout(() => square.classList.remove('captured'), 600);
+      }
+    }
+
+    // =============== RANKING GLOBAL ===============
+    function atualizarRankingGlobal(vencedor) {
+      get(query(rankingRef, orderByChild('nome'), limitToLast(100))).then(snapshot => {
+        let jogadorExistente = null;
+        snapshot.forEach(child => {
+          if (child.val().nome === vencedor) {
+            jogadorExistente = child.key;
+          }
+        });
+
+        if (jogadorExistente) {
+          const jogadorRef = ref(database, 'ranking/' + jogadorExistente);
+          get(jogadorRef).then(snap => {
+            const pontos = snap.val().pontos || 0;
+            set(jogadorRef, { nome: vencedor, pontos: pontos + 1 });
+          });
+        } else {
+          push(rankingRef, { nome: vencedor, pontos: 1 });
+        }
+      });
+    }
+
+    function carregarRanking() {
+      get(query(rankingRef, orderByChild('pontos'), limitToLast(10))).then(snapshot => {
+        const ranking = [];
+        snapshot.forEach(child => {
+          ranking.push(child.val());
+        });
+        ranking.sort((a, b) => b.pontos - a.pontos);
+        rankingListEl.innerHTML = '';
+        if (ranking.length === 0) {
+          rankingListEl.innerHTML = '<p>Nenhum jogo finalizado.</p>';
+        } else {
+          ranking.forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'rank-item';
+            div.innerHTML = `<strong>${item.nome}</strong><span>${item.pontos} pts</span>`;
+            rankingListEl.appendChild(div);
+          });
+        }
+      });
+    }
+
+    // =============== MOVIMENTO ===============
+    function executarMovimento(fromRow, fromCol, toRow, toCol, move) {
+      const alvo = board[toRow][toCol];
+      if (alvo !== null) aplicarEfeitoCaptura(toRow, toCol);
+
+      const origem = board[fromRow][fromCol];
+      if (origem === 'K') roque.w.short = roque.w.long = false;
+      if (origem === 'k') roque.b.short = roque.b.long = false;
+      if (origem === 'R' && fromRow === 7 && fromCol === 0) roque.w.long = false;
+      if (origem === 'R' && fromRow === 7 && fromCol === 7) roque.w.short = false;
+      if (origem === 'r' && fromRow === 0 && fromCol === 0) roque.b.long = false;
+      if (origem === 'r' && fromRow === 0 && fromCol === 7) roque.b.short = false;
+
+      if (move.special === 'roque-short') {
+        board[toRow][toCol - 1] = board[toRow][7];
+        board[toRow][7] = null;
+        board[toRow][toCol] = origem;
+      } else if (move.special === 'roque-long') {
+        board[toRow][toCol + 1] = board[toRow][0];
+        board[toRow][0] = null;
+        board[toRow][toCol] = origem;
+      } else {
+        board[toRow][toCol] = origem;
+        if ((origem === 'P' && toRow === 0) || (origem === 'p' && toRow === 7)) {
+          board[toRow][toCol] = origem === 'P' ? 'Q' : 'q';
+        }
+      }
+      board[fromRow][fromCol] = null;
+
+      turno = turno === 'w' ? 'b' : 'w';
+      selecionada = null;
+
+      reiEmXeque = emXeque(turno);
+      let fimDeJogo = false;
+      let mensagem = '';
+      let vencedor = null;
+
+      if (reiEmXeque) {
+        if (!temMovimentosValidos(turno)) {
+          fimDeJogo = true;
+          vencedor = turno === 'b' ? 'Brancas' : 'Pretas';
+          mensagem = `XEQUE-MATE! ${vencedor} vencem!`;
+          atualizarRankingGlobal(vencedor);
+        }
+      } else {
+        if (!temMovimentosValidos(turno)) {
+          fimDeJogo = true;
+          mensagem = "EMPATE!";
+        }
+      }
+
+      set(salaRef, {
+        board: board,
+        turno: turno,
+        roque: roque,
+        gameOver: fimDeJogo,
+        lastUpdate: serverTimestamp()
+      });
+
+      gameOver = fimDeJogo;
+      statusEl.textContent = mensagem || `Online - Turno: ${turno === 'w' ? 'Brancas' : 'Pretas'}`;
+      render();
+    }
+
+    // =============== CLIQUE NO TABULEIRO ===============
+    function handleSquareClick(row, col) {
+      if (gameOver || turno !== (meuTurno ? 'w' : 'b')) return;
+      const piece = board[row][col];
+      if (selecionada) {
+        const validMoves = getValidMoves(selecionada.row, selecionada.col);
+        const move = validMoves.find(m => m.row === row && m.col === col);
+        if (move) {
+          executarMovimento(selecionada.row, selecionada.col, row, col, move);
+          return;
+        }
+        if (piece && isWhite(piece) === meuTurno) {
+          selecionada = { row, col };
+          render();
+          return;
+        }
+        selecionada = null;
+        render();
+        return;
+      }
+      if (piece && isWhite(piece) === meuTurno) {
+        selecionada = { row, col };
+        render();
+      }
+    }
+
+    // =============== RENDERIZAÇÃO ===============
+    function render() {
+      boardEl.innerHTML = '';
+      const reiPos = getReiPos(turno);
+      for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+          const square = document.createElement('div');
+          square.className = `square ${(row + col) % 2 === 0 ? 'light' : 'dark'}`;
+          square.dataset.row = row;
+          square.dataset.col = col;
+          const piece = board[row][col];
+          if (piece) square.textContent = PIECES[piece];
+          if (selecionada && selecionada.row === row && selecionada.col === col) {
+            square.classList.add('selected');
+          }
+          if (reiEmXeque && reiPos && reiPos.row === row && reiPos.col === col) {
+            square.classList.add('in-check');
+          }
+          square.addEventListener('click', () => handleSquareClick(row, col));
+          boardEl.appendChild(square);
+        }
+      }
+    }
+
+    // =============== NOVA PARTIDA ===============
+    function novaPartida() {
+      if (turno !== 'w' && !gameOver) {
+        alert("Só quem joga com as brancas pode iniciar nova partida.");
+        return;
+      }
+      board = resetarTabuleiro();
+      turno = 'w';
+      gameOver = false;
+      roque = { w: { short: true, long: true }, b: { short: true, long: true } };
+      set(salaRef, {
+        board: board,
+        turno: turno,
+        roque: roque,
+        gameOver: false,
+        lastUpdate: serverTimestamp()
+      });
+    }
+    btnNovaPartida.addEventListener('click', novaPartida);
+
+    // =============== INICIALIZAÇÃO ===============
+    onValue(salaRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        board = data.board || resetarTabuleiro();
+        turno = data.turno || 'w';
+        roque = data.roque || { w: { short: true, long: true }, b: { short: true, long: true } };
+        gameOver = data.gameOver || false;
+      } else {
+        board = resetarTabuleiro();
+        turno = 'w';
+        gameOver = false;
+        set(salaRef, {
+          board: board,
+          turno: turno,
+          roque: roque,
+          gameOver: false,
+          lastUpdate: serverTimestamp()
+        });
+      }
+      meuTurno = (turno === 'w');
+      render();
+      statusEl.textContent = `Online - Turno: ${turno === 'w' ? 'Brancas' : 'Pretas'}`;
+    });
+
+    // Carrega ranking inicial e atualizações
+    carregarRanking();
+    onValue(rankingRef, carregarRanking);
+  </script>
+</body>
+</html>
